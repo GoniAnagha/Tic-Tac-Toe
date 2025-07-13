@@ -3,6 +3,9 @@
 #include <string.h>
 #include <unistd.h>
 #include <arpa/inet.h>
+#include <fcntl.h>
+#include <errno.h>
+#include <sys/select.h>
 
 #define PORT 8080
 
@@ -98,18 +101,93 @@ void send_board_to_players(int player1_socket, int player2_socket) {
     send(player2_socket, buffer, strlen(buffer), 0);
 }
 
+// Improved function to clear any pending input from a socket
+void clear_socket_buffer(int socket_fd) {
+    int original_flags = fcntl(socket_fd, F_GETFL, 0);
+    fcntl(socket_fd, F_SETFL, original_flags | O_NONBLOCK);
+    
+    char temp_buffer[1024];
+    int bytes_read;
+    
+    // Keep reading until no more data is available
+    do {
+        bytes_read = recv(socket_fd, temp_buffer, sizeof(temp_buffer), 0);
+    } while (bytes_read > 0);
+    
+    // Restore original socket flags
+    fcntl(socket_fd, F_SETFL, original_flags);
+}
+
+// Function to handle player responses for "play again" question
+int handle_play_again_responses(int player1_socket, int player2_socket) {
+    char response1[4] = {0};
+    char response2[4] = {0};
+    
+    send(player1_socket, "Do you want to play another game?(yes/no): ", 
+         strlen("Do you want to play another game?(yes/no): "), 0);
+    send(player2_socket, "Do you want to play another game?(yes/no): ", 
+         strlen("Do you want to play another game?(yes/no): "), 0);
+    
+    // Clear any pending input first
+    clear_socket_buffer(player1_socket);
+    clear_socket_buffer(player2_socket);
+    
+    // Receive responses from both players
+    int r1 = recv(player1_socket, response1, sizeof(response1) - 1, 0);
+    int r2 = recv(player2_socket, response2, sizeof(response2) - 1, 0);
+    
+    if (r1 <= 0 || r2 <= 0) {
+        send(player1_socket, "A player disconnected. Session ended.\n", 
+             strlen("A player disconnected. Session ended.\n"), 0);
+        send(player2_socket, "A player disconnected. Session ended.\n", 
+             strlen("A player disconnected. Session ended.\n"), 0);
+        return -1; // Error
+    }
+    
+    // Null-terminate the responses
+    response1[r1] = '\0';
+    response2[r2] = '\0';
+    
+    // Remove any trailing newlines
+    char *newline = strchr(response1, '\n');
+    if (newline) *newline = '\0';
+    newline = strchr(response2, '\n');
+    if (newline) *newline = '\0';
+    
+    // Check responses
+    if (strcmp(response1, "yes") == 0 && strcmp(response2, "yes") == 0) {
+        return 1; // Both want to play again
+    } else if (strcmp(response1, "no") == 0 && strcmp(response2, "no") == 0) {
+        send(player1_socket, "Both players chose not to play!! Session ended.\n", 
+             strlen("Both players chose not to play!! Session ended.\n"), 0);
+        send(player2_socket, "Both players chose not to play!! Session ended.\n", 
+             strlen("Both players chose not to play!! Session ended.\n"), 0);
+        return 0; // Both don't want to play
+    } else {
+        send(player1_socket, "One player chose not to play again. Session ended.\n", 
+             strlen("One player chose not to play again. Session ended.\n"), 0);
+        send(player2_socket, "One player chose not to play again. Session ended.\n", 
+             strlen("One player chose not to play again. Session ended.\n"), 0);
+        return 0; // One doesn't want to play
+    }
+}
+
 int main() {
     int server_fd, player1_socket, player2_socket;
     struct sockaddr_in address;
     int addrlen = sizeof(address);
     char buffer[1024] = {0};
 
-    // Initialize the Tic-Tac-Toe board
-    init_board();
-
     // Create socket
     if ((server_fd = socket(AF_INET, SOCK_STREAM, 0)) == 0) {
         perror("Socket failed");
+        exit(EXIT_FAILURE);
+    }
+
+    // Set socket options to reuse address
+    int opt = 1;
+    if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt))) {
+        perror("setsockopt");
         exit(EXIT_FAILURE);
     }
 
@@ -129,184 +207,181 @@ int main() {
         exit(EXIT_FAILURE);
     }
 
-    printf("Waiting for players to connect...\n");
+    printf("Server started. Waiting for players to connect...\n");
 
-    // Accept Player 1
-    if ((player1_socket = accept(server_fd, (struct sockaddr *)&address, (socklen_t*)&addrlen)) < 0) {
-        perror("Player 1 connection failed");
-        exit(EXIT_FAILURE);
-    }
-    printf("Player 1 connected\n");
-
-    // Accept Player 2
-    if ((player2_socket = accept(server_fd, (struct sockaddr *)&address, (socklen_t*)&addrlen)) < 0) {
-        perror("Player 2 connection failed");
-        exit(EXIT_FAILURE);
-    }
-    printf("Player 2 connected\n");
-    send_empty_board(player1_socket, player2_socket);
-    int wins;
-    // Game loop
+    // Main server loop - keeps running and accepts new players
     while (1) {
-        int row, col;
-        int winner = check_winner();
-        if (winner) {
-            snprintf(buffer, sizeof(buffer), "Player %d wins!\n", winner);
-            wins = winner;
-            send(player1_socket, buffer, strlen(buffer), 0);
-            send(player2_socket, buffer, strlen(buffer), 0);
-            char response1[4]; // Buffer for player 1's response
-            char response2[4]; // Buffer for player 2's response
-            send(player1_socket, "Do you want to play another game?(yes/no)", strlen("Do you want to play another game?(yes/no)"), 0);
-            send(player2_socket, "Do you want to play another game?(yes/no)", strlen("Do you want to play another game?(yes/no)"), 0);
-            // Receive responses from both players
-            memset(response1, 0, sizeof(response1));
-            memset(response2, 0, sizeof(response2));
-            int r1 = recv(player1_socket, response1, sizeof(response1) - 1, 0);
-            int r2 = recv(player2_socket, response2, sizeof(response2) - 1, 0);
-            if (r1 <= 0 || r2 <= 0) {
-                send(player1_socket, "A player disconnected. Exiting...\n", 34, 0);
-                send(player2_socket, "A player disconnected. Exiting...\n", 34, 0);
-                close(player1_socket);
-                close(player2_socket);
-                close(server_fd);
-                return 0;
+        printf("Waiting for players to connect...\n");
+
+        // Accept Player 1
+        if ((player1_socket = accept(server_fd, (struct sockaddr *)&address, (socklen_t*)&addrlen)) < 0) {
+            perror("Player 1 connection failed");
+            continue; // Try again instead of exiting
+        }
+        printf("Player 1 connected\n");
+
+        // Accept Player 2
+        if ((player2_socket = accept(server_fd, (struct sockaddr *)&address, (socklen_t*)&addrlen)) < 0) {
+            perror("Player 2 connection failed");
+            close(player1_socket);
+            continue; // Try again instead of exiting
+        }
+        printf("Player 2 connected\n");
+        
+        // Initialize game for new players
+        init_board();
+        player_turn = 1;
+        send_empty_board(player1_socket, player2_socket);
+
+        // Game session loop for current pair of players
+        while (1) {
+            int row, col;
+            int winner = check_winner();
+            
+            if (winner) {
+                snprintf(buffer, sizeof(buffer), "Player %d wins!\n", winner);
+                send(player1_socket, buffer, strlen(buffer), 0);
+                send(player2_socket, buffer, strlen(buffer), 0);
+                
+                int play_again = handle_play_again_responses(player1_socket, player2_socket);
+                if (play_again == 1) {
+                    send_empty_board(player1_socket, player2_socket);
+                    init_board();
+                    player_turn = 1;
+                    continue;
+                } else {
+                    break; // End this game session
+                }
+            } else if (check_draw()) {
+                snprintf(buffer, sizeof(buffer), "It's a draw!\n");
+                send(player1_socket, buffer, strlen(buffer), 0);
+                send(player2_socket, buffer, strlen(buffer), 0);
+                
+                int play_again = handle_play_again_responses(player1_socket, player2_socket);
+                if (play_again == 1) {
+                    send_empty_board(player1_socket, player2_socket);
+                    init_board();
+                    player_turn = 1;
+                    continue;
+                } else {
+                    break; // End this game session
+                }
             }
 
+            // Clear any pending input from both sockets
+            clear_socket_buffer(player1_socket);
+            clear_socket_buffer(player2_socket);
 
-            // Check responses
-            if (strcmp(response1, "yes") == 0 && strcmp(response2, "yes") == 0) {
-                // Both players want to play again
-                send_empty_board(player1_socket, player2_socket); // Send empty board
-                init_board();
-                player_turn=1;
-            } 
-            else if(strcmp(response1, "no") == 0 && strcmp(response2, "no") == 0)
-            {
-                send(player1_socket, "Both players chose not to play!!", strlen("Both players chose not to play!!"), 0);
-                send(player2_socket,"Both players chose not to play!!", strlen("Both players chose not to play!!"), 0 );
-                close(player1_socket);
-                close(player2_socket);
-                close(server_fd);
-                return 0;
+            // Notify the current player for their move
+            if (player_turn == 1) {
+                send(player1_socket, "Your turn (Player 1 - X):\n", 
+                     strlen("Your turn (Player 1 - X):\n"), 0);
+                send(player2_socket, "Waiting for Player 1's move...\n", 
+                     strlen("Waiting for Player 1's move...\n"), 0);
+            } else {
+                send(player2_socket, "Your turn (Player 2 - O):\n", 
+                     strlen("Your turn (Player 2 - O):\n"), 0);
+                send(player1_socket, "Waiting for Player 2's move...\n", 
+                     strlen("Waiting for Player 2's move...\n"), 0);
             }
-            else {
-                // Inform both players that the game is ending
-                send(player1_socket, "One player chose not to play again. Exiting...", strlen("One player chose not to play again. Exiting..."), 0);
-                send(player2_socket, "One player chose not to play again. Exiting...", strlen("One player chose not to play again. Exiting..."), 0);
-                close(player1_socket);
-                close(player2_socket);
-                close(server_fd);
-                return 0;
+
+            // Use select to monitor both sockets and only accept input from current player
+            fd_set readfds;
+            int max_fd = (player1_socket > player2_socket) ? player1_socket : player2_socket;
+            int valid_move = 0;
+            
+            while (!valid_move) {
+                FD_ZERO(&readfds);
+                FD_SET(player1_socket, &readfds);
+                FD_SET(player2_socket, &readfds);
+                
+                int activity = select(max_fd + 1, &readfds, NULL, NULL, NULL);
+                
+                if (activity < 0) {
+                    printf("Select error\n");
+                    break;
+                }
+                
+                // Check if player 1 sent data
+                if (FD_ISSET(player1_socket, &readfds)) {
+                    memset(buffer, 0, sizeof(buffer));
+                    int bytes_received = recv(player1_socket, buffer, sizeof(buffer) - 1, 0);
+                    
+                    if (bytes_received <= 0) {
+                        printf("Player 1 disconnected.\n");
+                        send(player2_socket, "Player 1 disconnected. Session ended.\n", 
+                             strlen("Player 1 disconnected. Session ended.\n"), 0);
+                        goto end_session;
+                    }
+                    
+                    buffer[bytes_received] = '\0';
+                    
+                    if (player_turn == 1) {
+                        // It's player 1's turn, process the move
+                        if (sscanf(buffer, "%d %d", &row, &col) != 2 || row < 0 || row >= 3 || 
+                            col < 0 || col >= 3 || board[row][col] != ' ') {
+                            send(player1_socket, "Invalid input or move. Try again.\n", 34, 0);
+                            continue;
+                        }
+                        
+                        update_board(row, col, 'X');
+                        player_turn = 2;
+                        valid_move = 1;
+                    } else {
+                        // It's not player 1's turn, ignore the input
+                        send(player1_socket, "It's not your turn. Please wait.\n", 
+                             strlen("It's not your turn. Please wait.\n"), 0);
+                    }
+                }
+                
+                // Check if player 2 sent data
+                if (FD_ISSET(player2_socket, &readfds)) {
+                    memset(buffer, 0, sizeof(buffer));
+                    int bytes_received = recv(player2_socket, buffer, sizeof(buffer) - 1, 0);
+                    
+                    if (bytes_received <= 0) {
+                        printf("Player 2 disconnected.\n");
+                        send(player1_socket, "Player 2 disconnected. Session ended.\n", 
+                             strlen("Player 2 disconnected. Session ended.\n"), 0);
+                        goto end_session;
+                    }
+                    
+                    buffer[bytes_received] = '\0';
+                    
+                    if (player_turn == 2) {
+                        // It's player 2's turn, process the move
+                        if (sscanf(buffer, "%d %d", &row, &col) != 2 || row < 0 || row >= 3 || 
+                            col < 0 || col >= 3 || board[row][col] != ' ') {
+                            send(player2_socket, "Invalid input or move. Try again.\n", 34, 0);
+                            continue;
+                        }
+                        
+                        update_board(row, col, 'O');
+                        player_turn = 1;
+                        valid_move = 1;
+                    } else {
+                        // It's not player 2's turn, ignore the input
+                        send(player2_socket, "It's not your turn. Please wait.\n", 
+                             strlen("It's not your turn. Please wait.\n"), 0);
+                    }
+                }
             }
-        } else if (check_draw()) {
-            snprintf(buffer, sizeof(buffer), "It's a draw!\n");
-            send(player1_socket, buffer, strlen(buffer), 0);
-            send(player2_socket, buffer, strlen(buffer), 0);
-            char response1[4]; // Buffer for player 1's response
-            char response2[4]; // Buffer for player 2's response
-            send(player1_socket, "Do you want to play another game?(yes/no)", strlen("Do you want to play another game?(yes/no)"), 0);
-            send(player2_socket, "Do you want to play another game?(yes/no)", strlen("Do you want to play another game?(yes/no)"), 0);
-            // Receive responses from both players
-            recv(player1_socket, response1, sizeof(response1), 0);
-            recv(player2_socket, response2, sizeof(response2), 0);
-            //printf("%s %s\n", response1, response2);
-            // Check responses
-            if (strcmp(response1, "yes") == 0 && strcmp(response2, "yes") == 0) {
-                // Both players want to play again
-                send_empty_board(player1_socket, player2_socket); // Send empty board
-                init_board();
-                player_turn=1;
-            } 
-            else if(strcmp(response1, "no") == 0 && strcmp(response2, "no") == 0)
-            {
-                send(player1_socket, "Both players chose not to play!!", strlen("Both players chose not to play!!"), 0);
-                send(player2_socket,"Both players chose not to play!!", strlen("Both players chose not to play!!"), 0 );
-                close(player1_socket);
-                close(player2_socket);
-                return 0;
-            }
-            else {
-                // Inform both players that the game is ending
-                send(player1_socket, "One player chose not to play again. Exiting...", strlen("One player chose not to play again. Exiting..."), 0);
-                send(player2_socket, "One player chose not to play again. Exiting...", strlen("One player chose not to play again. Exiting..."), 0);
-                close(player1_socket);
-                close(player2_socket);
-                close(server_fd);
-                return 0;
-            }
-            break;
+
+            // Send the updated board to both players
+            send_board_to_players(player1_socket, player2_socket);
         }
 
-        // Notify the current player for their move
-        if (player_turn == 1) {
-            send(player1_socket, "Your turn (Player 1 - X):\n", strlen("Your turn (Player 1 - X):\n"), 0);
-            // recv(player1_socket, buffer, sizeof(buffer), 0);
-            // sscanf(buffer, "%d %d", &row, &col);
-
-            memset(buffer, 0, sizeof(buffer));
-            int bytes_received = recv(player1_socket, buffer, sizeof(buffer) - 1, 0);
-            if (bytes_received <= 0) {
-                printf("Player 1 disconnected.\n");
-                send(player2_socket, "Player 1 disconnected. Exiting...\n", 34, 0);
-                close(player1_socket);
-                close(player2_socket);
-                close(server_fd);
-                return 0;
-            }
-            
-            if (sscanf(buffer, "%d %d", &row, &col) != 2 || row < 0 || row >= 3 || col < 0 || col >= 3 || board[row][col] != ' ') {
-                send(player1_socket, "Invalid input or move. Try again.\n", 34, 0);
-                continue;  // Ask again without switching turn
-            }
-
-
-            // Validate and update the board
-            if (row >= 0 && row < 3 && col >= 0 && col < 3 && board[row][col] == ' ') {
-                update_board(row, col, 'X');
-                player_turn = 2;  // Switch turn
-            } else {
-                send(player1_socket, "Invalid move. Try again.\n", strlen("Invalid move. Try again.\n"), 0);
-            }
-        } else {
-            send(player2_socket, "Your turn (Player 2 - O):\n", strlen("Your turn (Player 2 - O):\n"), 0);
-            // recv(player2_socket, buffer, sizeof(buffer), 0);
-            // sscanf(buffer, "%d %d", &row, &col);
-            memset(buffer, 0, sizeof(buffer));
-            int bytes_received = recv(player2_socket, buffer, sizeof(buffer) - 1, 0);
-            if (bytes_received <= 0) {
-                printf("Player 1 disconnected.\n");
-                send(player1_socket, "Player 2 disconnected. Exiting...\n", 34, 0);
-                close(player1_socket);
-                close(player2_socket);
-                close(server_fd);
-                return 0;
-            }
-            
-            if (sscanf(buffer, "%d %d", &row, &col) != 2 || row < 0 || row >= 3 || col < 0 || col >= 3 || board[row][col] != ' ') {
-                send(player1_socket, "Invalid input or move. Try again.\n", 34, 0);
-                continue;  // Ask again without switching turn
-            }
-
-
-            // Validate and update the board
-            if (row >= 0 && row < 3 && col >= 0 && col < 3 && board[row][col] == ' ') {
-                update_board(row, col, 'O');
-                player_turn = 1;  // Switch turn
-            } else {
-                send(player2_socket, "Invalid move. Try again.\n", strlen("Invalid move. Try again.\n"), 0);
-            }
-        }
-
-        // Send the updated board to both players
-        send_board_to_players(player1_socket, player2_socket);
+        end_session:
+        // Close connections for this pair of players
+        printf("Game session ended. Closing connections for current players.\n");
+        close(player1_socket);
+        close(player2_socket);
+        
+        // Server continues running and waits for new players
+        printf("Server ready for new players.\n");
     }
 
-    // Close connections
-    close(player1_socket);
-    close(player2_socket);
-    //printf("Player %d wins!\n", wins);
+    // This line should never be reached, but just in case
     close(server_fd);
-
     return 0;
 }
