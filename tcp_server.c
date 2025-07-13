@@ -160,8 +160,19 @@ int main() {
             send(player1_socket, "Do you want to play another game?(yes/no)", strlen("Do you want to play another game?(yes/no)"), 0);
             send(player2_socket, "Do you want to play another game?(yes/no)", strlen("Do you want to play another game?(yes/no)"), 0);
             // Receive responses from both players
-            recv(player1_socket, response1, sizeof(response1), 0);
-            recv(player2_socket, response2, sizeof(response2), 0);
+            memset(response1, 0, sizeof(response1));
+            memset(response2, 0, sizeof(response2));
+            int r1 = recv(player1_socket, response1, sizeof(response1) - 1, 0);
+            int r2 = recv(player2_socket, response2, sizeof(response2) - 1, 0);
+            if (r1 <= 0 || r2 <= 0) {
+                send(player1_socket, "A player disconnected. Exiting...\n", 34, 0);
+                send(player2_socket, "A player disconnected. Exiting...\n", 34, 0);
+                close(player1_socket);
+                close(player2_socket);
+                close(server_fd);
+                return 0;
+            }
+
 
             // Check responses
             if (strcmp(response1, "yes") == 0 && strcmp(response2, "yes") == 0) {
