@@ -3,6 +3,8 @@
 #include <string.h>
 #include <unistd.h>
 #include <arpa/inet.h>
+#include <fcntl.h>
+#include <errno.h>
 
 #define PORT 8080
 
@@ -45,21 +47,39 @@ int main() {
 
         if (strstr(buffer, "Do you want to play another game?")) {
             char next_game[4];
+            printf("Enter yes or no: ");
+            fflush(stdout);
             scanf("%3s", next_game);
+            
+            // Clear any remaining input in stdin
+            int c;
+            while ((c = getchar()) != '\n' && c != EOF);
+            
             if (strcmp(next_game, "yes") != 0 && strcmp(next_game, "no") != 0) {
                 printf("Invalid input. Defaulting to 'no'.\n");
                 strcpy(next_game, "no");
             }
             send(client_socket, next_game, strlen(next_game), 0);
-
+        }
+        
+        // Check if server is ending the game session
+        if (strstr(buffer, "Exiting...") || strstr(buffer, "chose not to play")) {
+            printf("Game session ended. Disconnecting...\n");
+            break;
         }
 
         // Get the player's move and send to the server
         if (strstr(buffer, "Your turn")) {
             int row, col;
             printf("Enter row and column (1, 2, or 3): ");
+            fflush(stdout);
+            
             char move_input[100];
-            fgets(move_input, sizeof(move_input), stdin);
+            if (fgets(move_input, sizeof(move_input), stdin) == NULL) {
+                printf("Error reading input\n");
+                continue;
+            }
+            
             if (sscanf(move_input, "%d %d", &row, &col) != 2) {
                 printf("Invalid input. Please enter two numbers like: 1 2\n");
                 continue;
