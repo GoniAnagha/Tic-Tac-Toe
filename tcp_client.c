@@ -45,15 +45,26 @@ int main() {
 
         if (strstr(buffer, "Do you want to play another game?")) {
             char next_game[4];
-            scanf("%s", next_game);
+            scanf("%3s", next_game);
+            if (strcmp(next_game, "yes") != 0 && strcmp(next_game, "no") != 0) {
+                printf("Invalid input. Defaulting to 'no'.\n");
+                strcpy(next_game, "no");
+            }
             send(client_socket, next_game, strlen(next_game), 0);
+
         }
 
         // Get the player's move and send to the server
         if (strstr(buffer, "Your turn")) {
             int row, col;
             printf("Enter row and column (1, 2, or 3): ");
-            scanf("%d %d", &row, &col);
+            char move_input[100];
+            fgets(move_input, sizeof(move_input), stdin);
+            if (sscanf(move_input, "%d %d", &row, &col) != 2) {
+                printf("Invalid input. Please enter two numbers like: 1 2\n");
+                continue;
+            }
+
             snprintf(buffer, sizeof(buffer), "%d %d", row-1, col-1);
             send(client_socket, buffer, strlen(buffer), 0);
         }
