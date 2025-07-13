@@ -230,8 +230,25 @@ int main() {
         // Notify the current player for their move
         if (player_turn == 1) {
             send(player1_socket, "Your turn (Player 1 - X):\n", strlen("Your turn (Player 1 - X):\n"), 0);
-            recv(player1_socket, buffer, sizeof(buffer), 0);
-            sscanf(buffer, "%d %d", &row, &col);
+            // recv(player1_socket, buffer, sizeof(buffer), 0);
+            // sscanf(buffer, "%d %d", &row, &col);
+
+            memset(buffer, 0, sizeof(buffer));
+            int bytes_received = recv(player1_socket, buffer, sizeof(buffer) - 1, 0);
+            if (bytes_received <= 0) {
+                printf("Player 1 disconnected.\n");
+                send(player2_socket, "Player 1 disconnected. Exiting...\n", 34, 0);
+                close(player1_socket);
+                close(player2_socket);
+                close(server_fd);
+                return 0;
+            }
+            
+            if (sscanf(buffer, "%d %d", &row, &col) != 2 || row < 0 || row >= 3 || col < 0 || col >= 3 || board[row][col] != ' ') {
+                send(player1_socket, "Invalid input or move. Try again.\n", 34, 0);
+                continue;  // Ask again without switching turn
+            }
+
 
             // Validate and update the board
             if (row >= 0 && row < 3 && col >= 0 && col < 3 && board[row][col] == ' ') {
@@ -242,8 +259,24 @@ int main() {
             }
         } else {
             send(player2_socket, "Your turn (Player 2 - O):\n", strlen("Your turn (Player 2 - O):\n"), 0);
-            recv(player2_socket, buffer, sizeof(buffer), 0);
-            sscanf(buffer, "%d %d", &row, &col);
+            // recv(player2_socket, buffer, sizeof(buffer), 0);
+            // sscanf(buffer, "%d %d", &row, &col);
+            memset(buffer, 0, sizeof(buffer));
+            int bytes_received = recv(player2_socket, buffer, sizeof(buffer) - 1, 0);
+            if (bytes_received <= 0) {
+                printf("Player 1 disconnected.\n");
+                send(player1_socket, "Player 2 disconnected. Exiting...\n", 34, 0);
+                close(player1_socket);
+                close(player2_socket);
+                close(server_fd);
+                return 0;
+            }
+            
+            if (sscanf(buffer, "%d %d", &row, &col) != 2 || row < 0 || row >= 3 || col < 0 || col >= 3 || board[row][col] != ' ') {
+                send(player1_socket, "Invalid input or move. Try again.\n", 34, 0);
+                continue;  // Ask again without switching turn
+            }
+
 
             // Validate and update the board
             if (row >= 0 && row < 3 && col >= 0 && col < 3 && board[row][col] == ' ') {
